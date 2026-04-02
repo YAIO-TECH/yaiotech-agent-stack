@@ -1,0 +1,151 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_TEMPORAL_DB}
+      POSTGRES_DB: temporal
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    configs:
+      - source: forgejo-db-init
+        target: /docker-entrypoint-initdb.d/10-forgejo-init.sh
+        mode: 0555
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - sh
+      - -lc
+      - exec redis-server --appendonly yes --requirepass "${SERVICE_PASSWORD_REDIS}"
+    volumes:
+      - redis-data:/data
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:13-rootless
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      USER_UID: 1000
+      USER_GID: 1000
+      FORGEJO__server__DOMAIN: forgejo.yaiotech.com
+      FORGEJO__server__ROOT_URL: https://forgejo.yaiotech.com/
+      FORGEJO__server__PROTOCOL: http
+      FORGEJO__server__HTTP_PORT: 3000
+      FORGEJO__server__START_SSH_SERVER: "false"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__security__SECRET_KEY: ${SERVICE_BASE64_64_FORGEJO_SECRET}
+      FORGEJO__security__INTERNAL_TOKEN: ${SERVICE_BASE64_64_FORGEJO_INTERNAL_TOKEN}
+      FORGEJO__database__DB_TYPE: postgres
+      FORGEJO__database__HOST: postgres:5432
+      FORGEJO__database__NAME: forgejo
+      FORGEJO__database__USER: forgejo
+      FORGEJO__database__PASSWD: ${SERVICE_PASSWORD_FORGEJO_DB}
+      FORGEJO__cache__ADAPTER: redis
+      FORGEJO__cache__HOST: redis://:${SERVICE_PASSWORD_REDIS}@redis:6379/0?pool_size=100&idle_timeout=180s
+      FORGEJO__session__PROVIDER: redis
+      FORGEJO__session__PROVIDER_CONFIG: redis://:${SERVICE_PASSWORD_REDIS}@redis:6379/1?pool_size=100&idle_timeout=180s
+    volumes:
+      - forgejo-data:/var/lib/gitea
+      - forgejo-config:/etc/gitea
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.yaio-forgejo-http.rule=Host(`forgejo.yaiotech.com`)
+      - traefik.http.routers.yaio-forgejo-http.entrypoints=http
+      - traefik.http.routers.yaio-forgejo-http.middlewares=yaio-forgejo-redirect
+      - traefik.http.middlewares.yaio-forgejo-redirect.redirectscheme.scheme=https
+      - traefik.http.routers.yaio-forgejo-http.service=yaio-forgejo
+      - traefik.http.routers.yaio-forgejo-https.rule=Host(`forgejo.yaiotech.com`)
+      - traefik.http.routers.yaio-forgejo-https.entrypoints=https
+      - traefik.http.routers.yaio-forgejo-https.tls=true
+      - traefik.http.routers.yaio-forgejo-https.tls.certresolver=letsencrypt
+      - traefik.http.routers.yaio-forgejo-https.service=yaio-forgejo
+      - traefik.http.services.yaio-forgejo.loadbalancer.server.port=3000
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${SERVICE_PASSWORD_TEMPORAL_DB}
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: https://temporal.yaiotech.com
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.yaio-temporal-http.rule=Host(`temporal.yaiotech.com`)
+      - traefik.http.routers.yaio-temporal-http.entrypoints=http
+      - traefik.http.routers.yaio-temporal-http.middlewares=yaio-temporal-redirect
+      - traefik.http.middlewares.yaio-temporal-redirect.redirectscheme.scheme=https
+      - traefik.http.routers.yaio-temporal-http.service=yaio-temporal
+      - traefik.http.routers.yaio-temporal-https.rule=Host(`temporal.yaiotech.com`)
+      - traefik.http.routers.yaio-temporal-https.entrypoints=https
+      - traefik.http.routers.yaio-temporal-https.tls=true
+      - traefik.http.routers.yaio-temporal-https.tls.certresolver=letsencrypt
+      - traefik.http.routers.yaio-temporal-https.service=yaio-temporal
+      - traefik.http.services.yaio-temporal.loadbalancer.server.port=8080
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${SERVICE_PASSWORD_QDRANT}
+    volumes:
+      - qdrant-data:/qdrant/storage
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.yaio-qdrant-http.rule=Host(`qdrant.yaiotech.com`)
+      - traefik.http.routers.yaio-qdrant-http.entrypoints=http
+      - traefik.http.routers.yaio-qdrant-http.middlewares=yaio-qdrant-redirect
+      - traefik.http.middlewares.yaio-qdrant-redirect.redirectscheme.scheme=https
+      - traefik.http.routers.yaio-qdrant-http.service=yaio-qdrant
+      - traefik.http.routers.yaio-qdrant-https.rule=Host(`qdrant.yaiotech.com`)
+      - traefik.http.routers.yaio-qdrant-https.entrypoints=https
+      - traefik.http.routers.yaio-qdrant-https.tls=true
+      - traefik.http.routers.yaio-qdrant-https.tls.certresolver=letsencrypt
+      - traefik.http.routers.yaio-qdrant-https.service=yaio-qdrant
+      - traefik.http.services.yaio-qdrant.loadbalancer.server.port=6333
+
+configs:
+  forgejo-db-init:
+    content: |
+      #!/bin/sh
+      set -eu
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'EOSQL'
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'forgejo') THEN
+          CREATE ROLE forgejo LOGIN PASSWORD '${SERVICE_PASSWORD_FORGEJO_DB}';
+        END IF;
+      END
+      $$;
+      SELECT 'CREATE DATABASE forgejo OWNER forgejo'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'forgejo')\gexec
+      EOSQL
+
+volumes:
+  postgres-data:
+  redis-data:
+  forgejo-data:
+  forgejo-config:
+  qdrant-data:
